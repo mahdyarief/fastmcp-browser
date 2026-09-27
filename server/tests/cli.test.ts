@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
@@ -245,4 +246,78 @@ test('cli rejects browser_use_instance without a string id', async () => {
   });
   assert.equal(code, 1);
   assert.equal(JSON.parse(stderr).error.code, 'INVALID_ARGUMENT');
+});
+
+test('cli hydrates browser_upload paths into files before calling the host', async () => {
+  const port = nextPort++;
+  const seenMessages: CallMessage[] = [];
+  const wss = await startHost(port, 'test-token', (socket, message) => {
+    seenMessages.push(message);
+    socket.send(JSON.stringify({ id: message.id, ok: true, result: { uploaded: true } }));
+  });
+  const tmpFile = fileURLToPath(new URL('./upload-fixture.txt', import.meta.url));
+  await writeFile(tmpFile, 'hello upload');
+  try {
+    const { code, stdout } = await runCli(['browser_upload', `{"paths":${JSON.stringify([tmpFile])}}`], {
+      FASTMCP_PORT: String(port),
+      FASTMCP_TOKEN: 'test-token'
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(stdout), { ok: true, result: { uploaded: true } });
+    assert.equal(seenMessages.length, 1);
+    const params = seenMessages[0].params as Record<string, unknown>;
+    assert.ok(!('paths' in params), 'raw paths must not be forwarded');
+    assert.ok(Array.isArray(params.files) && (params.files as unknown[]).length === 1);
+    const file = (params.files as Array<Record<string, unknown>>)[0];
+    assert.equal(file.name, 'upload-fixture.txt');
+    assert.equal(file.data, Buffer.from('hello upload').toString('base64'));
+  } finally {
+    await rm(tmpFile, { force: true });
+    await closeHost(wss);
+  }
+});
+
+test('cli rejects browser_upload with missing files without connecting', async () => {
+  const { code, stderr } = await runCli(['browser_upload', '{"paths":["/no/such/file-xyz.txt"]}'], {
+    FASTMCP_PORT: String(nextPort++)
+  });
+  assert.equal(code, 1);
+  assert.equal(JSON.parse(stderr).error.code, 'INVALID_ARGUMENT');
+});
+
+test('cli rejects browser_upload without a paths array without connecting', async () => {
+  const { code, stderr } = await runCli(['browser_upload', '{}'], {
+    FASTMCP_PORT: String(nextPort++)
+  });
+  assert.equal(code, 1);
+  assert.equal(JSON.parse(stderr).error.code, 'INVALID_ARGUMENT');
+});
+
+test('cli returns structured JSON when the TCP peer never speaks WebSocket', async () => {
+  const { createServer } = await import('node:net');
+  const sockets = new Set<import('node:net').Socket>();
+  const server = createServer((socket) => {
+    // Accept and hold the connection without speaking HTTP/WebSocket.
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+  });
+  const port = nextPort++;
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
+  try {
+    const { code, stdout, stderr } = await runCli(['browser_status'], {
+      FASTMCP_PORT: String(port),
+      FASTMCP_CLI_TIMEOUT_MS: '1500'
+    });
+    assert.equal(code, 1);
+    assert.equal(stdout, '');
+    const parsed = JSON.parse(stderr);
+    assert.equal(parsed.ok, false);
+    assert.equal(typeof parsed.error.code, 'string');
+    assert.equal(typeof parsed.error.message, 'string');
+    assert.doesNotMatch(stderr, /node:events/);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

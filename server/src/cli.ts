@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { TOOL_NAMES } from './tools.js';
+import { readUploadFiles, TOOL_NAMES } from './tools.js';
 
 const HELP = `Usage: node dist/src/cli.js <tool> [json-object]
        npm run call -- <tool> [json-object]
@@ -45,6 +45,12 @@ function parseArgs(args: string[]): { method: string; params: Record<string, unk
   if (method === 'browser_use_instance' && (typeof (params as Record<string, unknown>).id !== 'string' || !(params as Record<string, unknown>).id)) {
     throw failure('INVALID_ARGUMENT', 'browser_use_instance requires a nonempty string id');
   }
+  if (method === 'browser_upload') {
+    const paths = (params as Record<string, unknown>).paths;
+    if (!Array.isArray(paths) || !paths.every(path => typeof path === 'string')) {
+      throw failure('INVALID_ARGUMENT', 'browser_upload requires paths to be an array of strings');
+    }
+  }
   return { method, params: params as Record<string, unknown> };
 }
 
@@ -54,7 +60,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function callHost(port: number, token: string, method: string, params: Record<string, unknown>, requestTimeoutMs: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    } catch {
+      reject(failure('NO_CONNECTION', 'Could not connect to the FastMCP Browser host'));
+      return;
+    }
     const id = randomUUID();
     let phase: 'connecting' | 'handshake' | 'request' = 'connecting';
     let done = false;
@@ -64,8 +76,16 @@ function callHost(port: number, token: string, method: string, params: Record<st
       if (done) return;
       done = true;
       clearTimeout(timer);
-      socket.removeAllListeners();
-      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      try {
+        if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      } catch {
+        // Swallow terminate errors; the outcome is already decided.
+      }
+      socket.removeAllListeners('open');
+      socket.removeAllListeners('message');
+      socket.removeAllListeners('close');
+      // A pending connection can emit an error after terminate(). Keep its
+      // error listener so the rejected promise remains the only failure output.
       if (problem) reject(problem);
       else resolve(result);
     };
@@ -133,7 +153,20 @@ async function main(): Promise<void> {
     if (!input) { process.stdout.write(`${HELP}\n`); return; }
     const port = positiveInteger(process.env.FASTMCP_PORT, 9229, 'FASTMCP_PORT', 65535);
     const timeout = positiveInteger(process.env.FASTMCP_CLI_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, 'FASTMCP_CLI_TIMEOUT_MS', 180000);
-    const result = await callHost(port, process.env.FASTMCP_TOKEN ?? 'fastmcp-local-dev', input.method, input.params, timeout);
+    let params = input.params;
+    if (input.method === 'browser_upload') {
+      try {
+        const { paths, ...rest } = params;
+        params = { ...rest, files: await readUploadFiles(paths as string[]) };
+      } catch (uploadError) {
+        const problem = uploadError as { code?: unknown; message?: unknown };
+        throw failure(
+          typeof problem.code === 'string' ? problem.code : 'INVALID_ARGUMENT',
+          typeof problem.message === 'string' ? problem.message : 'Could not read upload files'
+        );
+      }
+    }
+    const result = await callHost(port, process.env.FASTMCP_TOKEN ?? 'fastmcp-local-dev', input.method, params, timeout);
     process.stdout.write(`${JSON.stringify({ ok: true, result: result ?? null })}\n`);
   } catch (problem) {
     const output = isObject(problem) && typeof problem.code === 'string' && typeof problem.message === 'string'
