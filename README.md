@@ -155,6 +155,20 @@ The extension auto-connects to `ws://127.0.0.1:9229` and keeps a stable per-prof
 
 Token defaults to `fastmcp-local-dev`; override with `FASTMCP_TOKEN` (server + extension must match).
 
+### Native CLI (no MCP client needed)
+
+The server ships a peer CLI that calls any tool directly over the bridge while the MCP server (or another peer) is running:
+
+```bash
+cd server
+npm run build
+npm run call -- browser_tabs '{"full":true}'
+npm run call -- browser_status
+node dist/src/cli.js --help
+```
+
+The tool name must match a known tool; the optional second argument is a JSON object of parameters. Success prints one JSON line (`{"ok":true,"result":...}`) to stdout and exits 0; failures print `{"ok":false,"error":{...}}` to stderr and exit nonzero. `FASTMCP_PORT` (default 9229), `FASTMCP_TOKEN`, and `FASTMCP_CLI_TIMEOUT_MS` (request timeout in ms) are read from the environment.
+
 ## Tool reference (30)
 
 | Group | Tools |

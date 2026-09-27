@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test --experimental-strip-types tests/*.test.ts",
-    "dev": "npm run build && node dist/src/index.js"
+    "dev": "npm run build && node dist/src/index.js",
+    "call": "node dist/src/cli.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
