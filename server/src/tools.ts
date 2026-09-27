@@ -22,7 +22,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-async function readUploadFiles(paths: string[]): Promise<Array<{ name: string; type: string; data: string }>> {
+export async function readUploadFiles(paths: string[]): Promise<Array<{ name: string; type: string; data: string }>> {
   const files = [];
   for (const path of paths) {
     let info;
