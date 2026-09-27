@@ -42,6 +42,9 @@ function parseArgs(args: string[]): { method: string; params: Record<string, unk
   if (params === null || typeof params !== 'object' || Array.isArray(params)) {
     throw failure('INVALID_ARGUMENT', 'Parameters must be a JSON object');
   }
+  if (method === 'browser_use_instance' && (typeof (params as Record<string, unknown>).id !== 'string' || !(params as Record<string, unknown>).id)) {
+    throw failure('INVALID_ARGUMENT', 'browser_use_instance requires a nonempty string id');
+  }
   return { method, params: params as Record<string, unknown> };
 }
 
@@ -93,7 +96,13 @@ function callHost(port: number, token: string, method: string, params: Record<st
         } else if (message.type === 'handshake_ok') {
           phase = 'request';
           deadline(requestTimeoutMs, 'Request');
-          socket.send(JSON.stringify({ type: 'call', id, method, params }));
+          if (method === 'browser_instances') {
+            finish(undefined, Array.isArray(message.instances) ? message.instances : []);
+          } else if (method === 'browser_use_instance') {
+            socket.send(JSON.stringify({ type: 'bridge_call', id, name: 'use_instance', params }));
+          } else {
+            socket.send(JSON.stringify({ type: 'call', id, method, params }));
+          }
         } else {
           finish(failure('INVALID_RESPONSE', 'Host sent an unexpected handshake response'));
         }

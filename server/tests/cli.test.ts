@@ -29,13 +29,14 @@ function runCli(args: string[], env: Record<string, string> = {}): Promise<RunRe
   });
 }
 
-type CallMessage = { type: string; id: string; method: string; params: Record<string, unknown> };
+type CallMessage = { type: string; id: string; method?: string; name?: string; params: Record<string, unknown> };
 
 async function startHost(
   port: number,
   token: string,
   onCall: (socket: WebSocket, message: CallMessage) => void,
-  seen?: { handshake?: Record<string, unknown> }
+  seen?: { handshake?: Record<string, unknown> },
+  instances: Array<{ id: string; active: boolean }> = []
 ): Promise<WebSocketServer> {
   const wss = new WebSocketServer({ host: '127.0.0.1', port });
   await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
@@ -47,7 +48,7 @@ async function startHost(
         if (message.type === 'handshake' && message.token === token) {
           authed = true;
           if (seen) seen.handshake = message;
-          socket.send(JSON.stringify({ type: 'handshake_ok', protocolVersion: 1 }));
+          socket.send(JSON.stringify({ type: 'handshake_ok', protocolVersion: 1, instances }));
         } else {
           socket.close(1008, 'unauthorized');
         }
@@ -190,4 +191,58 @@ test('cli --help exits zero with usage on stdout', async () => {
   assert.equal(code, 0);
   assert.equal(stderr, '');
   assert.match(stdout, /Usage: node dist\/src\/cli\.js/);
+});
+
+test('cli serves browser_instances from the handshake snapshot without a call', async () => {
+  const port = nextPort++;
+  const instances = [{ id: 'instance-a', active: true }];
+  let callCount = 0;
+  const wss = await startHost(port, 'test-token', () => { callCount += 1; }, undefined, instances);
+  try {
+    const { code, stdout, stderr } = await runCli(['browser_instances'], {
+      FASTMCP_PORT: String(port),
+      FASTMCP_TOKEN: 'test-token'
+    });
+    assert.equal(code, 0);
+    assert.equal(stderr, '');
+    assert.deepEqual(JSON.parse(stdout), { ok: true, result: instances });
+    assert.equal(callCount, 0, 'browser_instances must not be relayed as a bridge call');
+  } finally {
+    await closeHost(wss);
+  }
+});
+
+test('cli sends browser_use_instance as a bridge_call use_instance message', async () => {
+  const port = nextPort++;
+  const seenMessages: CallMessage[] = [];
+  const wss = await startHost(port, 'test-token', (socket, message) => {
+    seenMessages.push(message);
+    if (message.type === 'bridge_call' && message.name === 'use_instance') {
+      socket.send(JSON.stringify({ id: message.id, ok: true, result: { active: 'instance-a' } }));
+      return;
+    }
+    socket.send(JSON.stringify({ id: message.id, ok: false, error: { code: 'INVALID_ARGUMENT', message: 'Expected a bridge_call', retryable: false } }));
+  });
+  try {
+    const { code, stdout } = await runCli(['browser_use_instance', '{"id":"instance-a"}'], {
+      FASTMCP_PORT: String(port),
+      FASTMCP_TOKEN: 'test-token'
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(stdout), { ok: true, result: { active: 'instance-a' } });
+    assert.equal(seenMessages.length, 1);
+    assert.equal(seenMessages[0].type, 'bridge_call');
+    assert.equal(seenMessages[0].name, 'use_instance');
+    assert.deepEqual(seenMessages[0].params, { id: 'instance-a' });
+  } finally {
+    await closeHost(wss);
+  }
+});
+
+test('cli rejects browser_use_instance without a string id', async () => {
+  const { code, stderr } = await runCli(['browser_use_instance', '{}'], {
+    FASTMCP_PORT: String(nextPort++)
+  });
+  assert.equal(code, 1);
+  assert.equal(JSON.parse(stderr).error.code, 'INVALID_ARGUMENT');
 });
