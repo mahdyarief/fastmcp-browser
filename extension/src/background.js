@@ -2,6 +2,7 @@ import { createCommandRouter } from './router.js';
 import { createPageEvaluator } from './evaluate.js';
 import { captureFullPage } from './screenshot.js';
 import { createNetworkMonitor } from './network-monitor.js';
+import { unwrapScriptResult } from './script-result.js';
 import { detectBrowser, createSessionManager, bridgeIdentity } from './session.js';
 
 const api = globalThis.browser ?? globalThis.chrome;
@@ -130,16 +131,14 @@ async function callPage(tabId, method, params, attempt = 0) {
       if (name === 'browser_pointer_move') return engine.pointer({ ...input, type: 'pointermove' });
       if (name === 'browser_pointer_click') return engine.pointer({ ...input, type: 'pointerclick' });
       if (name === 'browser_pointer_drag') {
-        engine.pointer({ ...input.from, type: 'pointerdown', buttons: 1 });
-        engine.pointer({ ...input.to, type: 'pointermove', buttons: 1 });
-        return engine.pointer({ ...input.to, type: 'pointerup' });
+        return engine.pointer({ ...input, type: 'pointerdrag' });
       }
       throw Object.assign(new Error(`Unsupported page method: ${name}`), { code: 'UNSUPPORTED_CAPABILITY' });
     },
     args: [method, effective]
   });
-  const value = result?.[0]?.result;
-  if (value === undefined || value === null) {
+  const value = unwrapScriptResult(result, method);
+  if (value === null) {
     // A navigation between inject and execute returns no value. Retrying is safe
     // for reads; for an action it could repeat a side effect we cannot observe, so
     // report the unknown state instead of firing twice.
