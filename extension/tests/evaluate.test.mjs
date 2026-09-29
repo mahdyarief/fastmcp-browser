@@ -72,3 +72,13 @@ test('rejects a missing tabId and an empty expression before touching the page',
   await assert.rejects(evaluator.evaluate({ tabId: 5, expression: '   ' }), error => error.code === 'INVALID_ARGUMENT');
   assert.equal(scripting.calls.length, 0);
 });
+
+test('surfaces an error instead of silent null when the page returns no result', async () => {
+  const scripting = fakeScripting([[{}]]);
+  const evaluator = createPageEvaluator({ scripting, inject: async () => undefined });
+
+  await assert.rejects(
+    evaluator.evaluate({ tabId: 6, expression: '1+1' }),
+    error => error.code === 'TAB_NOT_ACCESSIBLE'
+  );
+});

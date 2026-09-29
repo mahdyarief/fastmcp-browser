@@ -49,6 +49,26 @@ export function createPageEvaluator({ scripting, inject, attribute = REF_ATTRIBU
     return JSON.parse(serialized);
   }
 
+  // executeScript resolves successfully even when the injected function throws,
+  // in which case `.result` is undefined. A MAIN-world eval that hits a CSP or a
+  // syntax error used to land here and turn into a silent `null`, hiding both
+  // the failure and its reason; the page function now reports it explicitly and
+  // this guard is the backstop for any other no-result path.
+  function unwrap(outcome, method) {
+    if (outcome?.ok === false) {
+      const code = outcome.error?.code ?? 'INVALID_ARGUMENT';
+      throw evaluationError(outcome.error?.message ?? 'Evaluation failed.', code, outcome.error?.retryable === true);
+    }
+    if (outcome === undefined) {
+      throw evaluationError(
+        `The page returned no result for ${method}; the expression may have been blocked by the page's CSP or the tab may be navigating. Retry with a fresh browser_snapshot, or use browser_inspect to read the target.`,
+        'TAB_NOT_ACCESSIBLE',
+        true
+      );
+    }
+    return outcome;
+  }
+
   return {
     async evaluate(params = {}) {
       const tabId = Number(params?.tabId);
@@ -74,6 +94,10 @@ export function createPageEvaluator({ scripting, inject, attribute = REF_ATTRIBU
             try {
               const evaluated = eval(expr);
               return bindElement && typeof evaluated === 'function' ? evaluated(element) : evaluated;
+            } catch (error) {
+              // Surfaced as data so the failure crosses the scripting boundary
+              // instead of being swallowed into an undefined result.
+              return { ok: false, error: { code: 'INVALID_ARGUMENT', message: `Expression failed: ${error?.message ?? String(error)}` } };
             } finally {
               if (element) element.removeAttribute(attr);
             }
@@ -84,7 +108,7 @@ export function createPageEvaluator({ scripting, inject, attribute = REF_ATTRIBU
         throw evaluationError(`Evaluation failed: ${error?.message ?? String(error)}`);
       }
 
-      return serialize(results?.[0]?.result ?? null);
+      return serialize(unwrap(results?.[0]?.result, 'browser_evaluate'));
     },
 
     async inspect(params = {}) {
